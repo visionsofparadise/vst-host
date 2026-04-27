@@ -1,0 +1,25 @@
+[project]
+name = "vst-host"
+version = "0.1.0"
+description = "Pedalboard-based VST3 host CLI for Engineering's Vst3Node"
+readme = "README.md"
+license = { text = "GPL-3.0-or-later" }
+requires-python = "==3.12.*"
+dependencies = [
+    "pedalboard==0.9.22",
+    "numpy>=2.0,<3",
+]
+
+[project.scripts]
+vst-host = "vst_host:main"
+
+[project.urls]
+Homepage = "https://github.com/visionsofparadise/vst-host"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["vst_host"]
