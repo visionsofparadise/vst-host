@@ -1,0 +1,99 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32
+            arch: x64
+            ext: ".exe"
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x64
+            ext: ""
+          - os: macos-14
+            platform: darwin
+            arch: arm64
+            ext: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.10.0
+
+      - name: Build with PyInstaller
+        shell: bash
+        run: |
+          pyinstaller pyinstaller.spec --clean --noconfirm
+
+      - name: Stage artifact with platform-arch name
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          SRC="dist/vst-host${{ matrix.ext }}"
+          DST="artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}"
+          if [ ! -f "$SRC" ]; then
+            echo "Expected PyInstaller output at $SRC, got:" >&2
+            ls -la dist/ >&2
+            exit 1
+          fi
+          cp "$SRC" "$DST"
+          ls -la "$DST"
+
+      - name: Smoke test --help
+        shell: bash
+        run: |
+          ./artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }} --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vst-host-${{ matrix.platform }}-${{ matrix.arch }}
+          path: artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts/
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
