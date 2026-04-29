@@ -1,6 +1,6 @@
 [project]
 name = "vst-host"
-version = "0.1.0"
+version = "0.2.0"
 description = "Pedalboard-based VST3 host CLI for Engineering's Vst3Node"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
