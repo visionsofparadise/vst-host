@@ -9,17 +9,17 @@ no per-plugin PDC management on the caller side.
 
 The chain is specified at startup as a JSON file; the buffer flows in via
 stdin and out via stdout as f32le interleaved bytes. Designed as the
-subprocess backend for Engineering's `Vst3Node` (whole-file mode).
+subprocess backend for Buffered Audio Graph's `Vst3Node` (whole-file mode).
 
 Stdio contract:
 - stdout: a single ``READY\\n`` line on startup once all plugins (and presets,
   if any) are loaded, followed by raw f32le interleaved audio bytes; nothing
   else ever goes to stdout.
 - stdin: raw f32le interleaved audio bytes, read until EOF.
-- stderr: all logging, diagnostics, and error messages.
+- stderr: diagnostics, errors, and ``VST_HOST_EVENT`` liveness records.
 
-See ``projects/code/engineering/buffered-audio-nodes/design-vst3.md`` in the
-Engineering planner for the full architectural design.
+See ``projects/code/buffered-audio-graph/buffered-audio-nodes/design-vst3.md``
+in the planner for the full architectural design.
 """
 
 from __future__ import annotations
@@ -33,9 +33,46 @@ import pedalboard
 import argparse
 import json
 import sys
+import threading
+import time
 from typing import Any
 
 import numpy as np
+
+
+_LIVENESS_INTERVAL_SECONDS = 30.0
+_ACTIVE_CPU_THRESHOLD_SECONDS = 0.1
+_TELEMETRY_PREFIX = "VST_HOST_EVENT "
+
+
+def _monitor_liveness(
+    stop: threading.Event,
+    started_ns: int,
+    initial_cpu_ns: int,
+    interval_seconds: float = _LIVENESS_INTERVAL_SECONDS,
+) -> None:
+    previous_cpu_ns = initial_cpu_ns
+
+    while not stop.wait(interval_seconds):
+        current_ns = time.monotonic_ns()
+        current_cpu_ns = time.process_time_ns()
+        cpu_delta_ns = max(0, current_cpu_ns - previous_cpu_ns)
+        event = {
+            "type": "liveness",
+            "phase": "process",
+            "elapsedMs": max(0, current_ns - started_ns) // 1_000_000,
+            "processCpuDeltaMs": cpu_delta_ns // 1_000_000,
+            "processCpuMs": max(0, current_cpu_ns) // 1_000_000,
+            "state": (
+                "active"
+                if cpu_delta_ns >= int(_ACTIVE_CPU_THRESHOLD_SECONDS * 1_000_000_000)
+                else "idle"
+            ),
+        }
+
+        sys.stderr.write(_TELEMETRY_PREFIX + json.dumps(event, separators=(",", ":")) + "\n")
+        sys.stderr.flush()
+        previous_cpu_ns = current_cpu_ns
 
 
 def _settle_state(plugin: pedalboard.Plugin) -> None:
@@ -236,6 +273,17 @@ def main(argv: list[str] | None = None) -> int:
     # ``Pedalboard.process`` accepts shape (channels, samples).
     samples = interleaved.reshape(-1, args.channels).T
 
+    monitor_stop = threading.Event()
+    monitor_started_ns = time.monotonic_ns()
+    initial_cpu_ns = time.process_time_ns()
+    monitor = threading.Thread(
+        target=_monitor_liveness,
+        args=(monitor_stop, monitor_started_ns, initial_cpu_ns),
+        name="vst-host-liveness",
+    )
+
+    monitor.start()
+
     try:
         # Offline mode: reset=True. Pedalboard handles plugin delay
         # compensation internally for the whole chain; the returned buffer
@@ -244,6 +292,9 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"vst-host: error during processing: {exc}", file=sys.stderr)
         return 1
+    finally:
+        monitor_stop.set()
+        monitor.join()
 
     if out.shape[1] != samples.shape[1]:
         print(
