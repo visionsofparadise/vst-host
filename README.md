@@ -20,15 +20,7 @@ The stages file is a non-empty JSON array. Each object contains `pluginPath`, wi
 Stdio contract:
 - **stdout**: a single `READY\n` line once the plugin (and preset, if any) is loaded, followed by raw f32le interleaved audio bytes; nothing else.
 - **stdin**: raw f32le interleaved audio bytes, read until EOF before offline processing starts.
-- **stderr**: diagnostics, errors, and structured liveness records.
-
-While the Pedalboard call is pending, the host writes one compact JSON record every 30 seconds:
-
-```text
-VST_HOST_EVENT {"type":"liveness","phase":"process","elapsedMs":30001,"processCpuDeltaMs":28754,"processCpuMs":29012,"state":"active"}
-```
-
-`active` means the host process accumulated at least 100 ms of CPU time during the interval. `idle` means it accumulated less. The state is evidence for an operator, not a hang verdict, and the host never terminates processing because of it. Vendor plugins may wait legitimately or perform work in a child process that is outside this process CPU measurement.
+- **stderr**: all logging, diagnostics, and error messages.
 
 ## Build
 
