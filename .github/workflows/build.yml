@@ -73,6 +73,7 @@ jobs:
           name: vst-host-${{ matrix.platform }}-${{ matrix.arch }}
           path: artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
           if-no-files-found: error
+          retention-days: 1
 
   release:
     needs: build
@@ -97,3 +98,24 @@ jobs:
           files: artifacts/*
           generate_release_notes: true
           fail_on_unmatched_files: true
+
+      - name: Delete older stable releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/releaseRetention.mjs releases ${{ github.ref_name }}
+
+  cleanup-artifacts:
+    needs: [build, release]
+    if: ${{ always() && needs.build.result == 'success' && (needs.release.result == 'success' || needs.release.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Delete temporary workflow artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/releaseRetention.mjs artifacts
