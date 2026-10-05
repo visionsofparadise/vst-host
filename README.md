@@ -25,4 +25,4 @@ Binaries are built for Windows (`vst-host-win32-x64.exe`), Linux (`vst-host-linu
 
 ## License
 
-The produced binary embeds Pedalboard and JUCE, both GPLv3, so the binary as a whole is GPLv3. The wrapper script and build configuration are MIT-licensed.
+[GPL-3.0-or-later](LICENSE). The produced binary embeds Pedalboard and JUCE, both GPLv3, so the whole project is GPL-3.0-or-later.
