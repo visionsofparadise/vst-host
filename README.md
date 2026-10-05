@@ -1,14 +1,12 @@
 # vst-host
 
-Pedalboard-based VST3 host CLI used as the subprocess backend for Buffered Audio Graph's `Vst3Node`.
+A command-line host for VST3 effect plugins. It runs raw audio through an ordered chain of plugins, optionally applying a `.vstpreset` to each, and writes the processed audio back out. It is the plugin backend for [Buffered Audio Graph](https://github.com/visionsofparadise/buffered-audio-graph).
 
-The process loads an ordered chain of VST3 effect plugins via [Pedalboard](https://spotify.github.io/pedalboard/) and optionally applies a `.vstpreset` to each stage. It reads the complete f32le interleaved input from stdin, invokes the chain once in offline mode with `reset=True`, and writes the complete result to stdout. Pedalboard owns plugin state and delay compensation across the whole file.
+Each run reads the whole input, processes it offline with plugin delay compensation applied across the chain, and writes the whole result. No system Python is needed to run the released binaries.
 
-The parent project ([Buffered Audio Graph](https://github.com/visionsofparadise/buffered-audio-graph)) spawns this binary once per `Vst3Node` render. The architectural design lives in the Buffered Audio Graph planner at `projects/code/buffered-audio-graph/buffered-audio-nodes/design-vst3.md`.
+## Usage
 
-## CLI
-
-```
+```sh
 vst-host \
   --stages-json <path-to-stages.json> \
   --sample-rate <int> \
@@ -17,19 +15,14 @@ vst-host \
 
 The stages file is a non-empty JSON array. Each object contains `pluginPath`, with optional `pluginName` for shell plugins and optional `presetPath`.
 
-Stdio contract:
-- **stdout**: a single `READY\n` line once the plugin (and preset, if any) is loaded, followed by raw f32le interleaved audio bytes; nothing else.
-- **stdin**: raw f32le interleaved audio bytes, read until EOF before offline processing starts.
-- **stderr**: all logging, diagnostics, and error messages.
+- **stdin**: raw f32le interleaved audio, read until EOF before processing starts.
+- **stdout**: a single `READY\n` line once the plugins and presets are loaded, followed by the raw f32le interleaved result.
+- **stderr**: logging, diagnostics and errors.
 
-## Build
+## Releases
 
-Releases are produced by GitHub Actions for `windows-latest` (`vst-host-win32-x64.exe`), `ubuntu-22.04` (`vst-host-linux-x64`), and `macos-14` (`vst-host-darwin-arm64`). Each artifact is a self-contained PyInstaller `--onefile` bundle of Python 3.12 + Pedalboard + numpy + the wrapper script. No system Python is required at runtime.
-
-## Distribution
-
-Artifacts are uploaded to the `buffered-audio-binaries-345340320424` S3 bucket and registered in Buffered Audio Graph's `binaries.manifest.json` under the schema key `vst-host`, alongside the existing addons (`onnx-runtime-addon`, `vkfft-addon`, `fftw-addon`).
+Binaries are built for Windows (`vst-host-win32-x64.exe`), Linux (`vst-host-linux-x64`) and macOS (`vst-host-darwin-arm64`).
 
 ## License
 
-This binary statically embeds Pedalboard (GPLv3) and JUCE (GPLv3 free tier). The wrapper script and build configuration are MIT-licensed; the produced binary as a whole is GPLv3.
+The produced binary embeds Pedalboard and JUCE, both GPLv3, so the binary as a whole is GPLv3. The wrapper script and build configuration are MIT-licensed.

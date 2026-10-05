@@ -32,3 +32,6 @@ Thumbs.db
 
 # Local notes (release artifact hashes etc)
 RELEASE_NOTES_*.txt
+
+# Transient files
+.scratch/
