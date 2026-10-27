@@ -22,4 +22,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = ["vst_host"]
+py-modules = ["vst_host", "params_core", "vst2_host"]

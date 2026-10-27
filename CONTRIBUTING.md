@@ -10,9 +10,10 @@ Run `pip install -r requirements.txt pyinstaller==6.10.0` inside a Python 3.12 v
 
 ## Pull requests
 
-This check must pass before a pull request is opened:
+These checks must pass before a pull request is opened:
 
 ```sh
+python -m unittest discover -s src -p "test_*.py"
 pyinstaller pyinstaller.spec --clean --noconfirm && dist/vst-host --help
 ```
 

@@ -44,6 +44,11 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller==6.10.0
 
+      - name: Unit tests
+        shell: bash
+        run: |
+          python -m unittest discover -s src -p "test_*.py"
+
       - name: Build with PyInstaller
         shell: bash
         run: |
