@@ -122,6 +122,10 @@ class _Vst3Parameter:
                 out["step"] = wrapper.step_size
         elif wrapper.type is bool:
             out["boolean"] = True
+        elif wrapper.type is str and len(wrapper.valid_values) > params_core.PROBE_MAX_CHOICES:
+            # Text displays of a continuous value ("70% (-9.3 dB)"): the probe's limit applies.
+            out["minText"] = str(wrapper.valid_values[0])
+            out["maxText"] = str(wrapper.valid_values[-1])
         elif wrapper.type is str:
             choices = []
             for value in wrapper.valid_values:
