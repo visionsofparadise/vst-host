@@ -13,7 +13,7 @@ vst-host \
   --channels <int>
 ```
 
-The stages file is a non-empty JSON array. Each object contains `pluginPath`, with optional `pluginName` for shell plugins and optional `presetPath`.
+The stages file is a non-empty JSON array. Each object contains `pluginPath`, a `.vst3` file or bundle folder, with optional `pluginName` for shell plugins and optional `presetPath`.
 
 - **stdin**: raw f32le interleaved audio, read until EOF before processing starts.
 - **stdout**: a single `READY\n` line once the plugins and presets are loaded, followed by the raw f32le interleaved result.
@@ -34,7 +34,7 @@ The request:
 | Field | Meaning |
 |---|---|
 | `format` | `"vst3"` or `"vst2"` (VST2 on Windows only). |
-| `pluginPath` | The `.vst3` bundle or the VST2 `.dll`. |
+| `pluginPath` | The `.vst3` file or bundle folder, or the VST2 `.dll`. |
 | `pluginName` | Optional sub-plugin name for VST3 shell plugins; a `vst2` request carrying it exits 2. |
 | `state` | Optional base64 state, FL Studio's Fruity Wrapper plugin state: for VST3 a u32 version then chunks of u32 id, u64 length and data, where chunk 3 is the plugin's component state; for VST2 a 21-byte header holding the chunk length as a u32 at byte 9, then the plugin's chunk. Without it the plugin starts from its defaults. |
 | `set` | Optional object of parameter name to raw value in [0, 1], applied to the state. |
@@ -46,7 +46,7 @@ The response:
 | Field | Meaning |
 |---|---|
 | `plugin` | `name`, `vendor`, `version` and `identifier`. |
-| `state` | The state in the request's framing, with `set` applied. A VST3 `set` replaces chunk 3 only. Without `set` it is the request's state. |
+| `state` | The state with `set` applied, in the request's framing. A VST3 `set` replaces chunk 3 only. Without `set` it is the request's state as sent. A request without `state` gets a fresh Fruity Wrapper state from the plugin's defaults: for VST3 FL's 64-byte data chunk and chunk 3, for VST2 the 21-byte header and the plugin's chunk. |
 | `parameters` | Rows of `name`, `index`, `raw`, `display` and `default`. Catalog rows add whichever of `label`, `units`, `min`, `max`, `minText`, `maxText`, `step`, `choices` (`{ label, raw }`), `discrete`, `boolean` and `automatable` the plugin supplies. |
 | `previews` | `{ name, raw, display }` per preview. |
 | `stale` | `true` when a VST3 plugin's controller ignores the loaded state, so its reported values are its defaults rather than the state's. `parameters` is then empty, and `set` still applies to the state: each value goes to its target ± 0.01 and then to the target, and a value the saved state does not take exits 1. |

@@ -70,6 +70,24 @@ def _settle_state(plugin: pedalboard.Plugin) -> None:
     plugin.raw_state = plugin.raw_state
 
 
+_WINDOWS_BUNDLE_BINARY = os.path.join("Contents", "x86_64-win")
+
+
+def resolve_vst3_path(path: str, platform: str = sys.platform) -> str:
+    """The loadable file for a VST3 path: a bundle folder's inner binary on Windows.
+
+    pedalboard on Windows scans a ``.vst3`` binary and rejects the bundle
+    folder around it (``Unable to scan plugin``). A folder ending ``.vst3``
+    that holds ``Contents/x86_64-win/<name>.vst3`` resolves to that file;
+    every other path is returned as given.
+    """
+    if platform != "win32" or not path.lower().rstrip("\\/").endswith(".vst3") or not os.path.isdir(path):
+        return path
+    name = os.path.basename(os.path.normpath(path))
+    inner = os.path.join(path, _WINDOWS_BUNDLE_BINARY, name)
+    return inner if os.path.isfile(inner) else path
+
+
 _RAW_STATE = pedalboard_native.VST3Plugin.raw_state  # the property itself, see _Vst3Plugin
 _FLUSH_FRAMES = 512
 _FLUSH_RATE = 44100.0
@@ -152,6 +170,7 @@ class _Vst3Plugin:
     """
 
     def __init__(self, path: str, plugin_name: str | None):
+        path = resolve_vst3_path(path)
         if plugin_name:
             self.plugin = pedalboard_native.VST3Plugin(path, plugin_name=plugin_name)
         else:
@@ -239,7 +258,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         prog="vst-host",
         description=(
             "Process an audio buffer through a chain of VST3 effect plugins "
-            "via Pedalboard, in offline mode with internal PDC."
+            "via Pedalboard, in offline mode with internal PDC. The 'params' "
+            "command reads and writes a VST3 or VST2 plugin's parameters and "
+            "state."
         ),
     )
     parser.add_argument(
@@ -267,9 +288,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help=(
             "Enumerate sub-plugin names contained in the given .vst3 file "
-            "(e.g. for WaveShell) and exit. Prints one name per line on "
-            "stdout. No audio I/O happens in this mode; --stages-json, "
-            "--sample-rate, --channels are not required."
+            "or bundle (e.g. for WaveShell) and exit. Prints one name per "
+            "line on stdout. This mode takes no other option or command."
         ),
     )
     subcommands = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -305,7 +325,7 @@ def _load_chain(stages: list[dict[str, Any]]) -> pedalboard.Pedalboard:
             else f"'{plugin_path}'"
         )
         try:
-            plugin = pedalboard.load_plugin(plugin_path, plugin_name=plugin_name)
+            plugin = pedalboard.load_plugin(resolve_vst3_path(plugin_path), plugin_name=plugin_name)
         except Exception as exc:  # noqa: BLE001 - surface any plugin-load failure.
             raise RuntimeError(f"stage {i}: failed to load plugin {which}: {exc}") from exc
 
@@ -357,8 +377,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.list_plugin_names is not None:
+        extra = [
+            flag
+            for flag, value in (
+                ("--stages-json", args.stages_json),
+                ("--sample-rate", args.sample_rate),
+                ("--channels", args.channels),
+                ("params", args.command),
+            )
+            if value is not None
+        ]
+        if extra:
+            print(f"vst-host: --list-plugin-names takes no other option, got {', '.join(extra)}", file=sys.stderr)
+            return 2
         try:
-            names = pedalboard.VST3Plugin.get_plugin_names_for_file(args.list_plugin_names)
+            names = pedalboard.VST3Plugin.get_plugin_names_for_file(resolve_vst3_path(args.list_plugin_names))
         except Exception as exc:  # noqa: BLE001
             print(
                 f"vst-host: failed to enumerate plugin names in '{args.list_plugin_names}': {exc}",

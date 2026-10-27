@@ -1,7 +1,7 @@
 [project]
 name = "vst-host"
 version = "0.2.0"
-description = "Pedalboard-based VST3 host CLI for Engineering's Vst3Node"
+description = "Pedalboard-based VST3 chain host CLI, with a params command that reads and writes VST3 and VST2 plugin parameters and state"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }
 requires-python = "==3.12.*"
