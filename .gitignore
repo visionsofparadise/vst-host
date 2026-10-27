@@ -11,6 +11,7 @@ env/
 
 # PyInstaller
 dist/
+dist-next/
 build/
 *.spec.bak
 
