@@ -200,20 +200,29 @@ class Request:
 
 
 def _number(value: Any, where: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RequestError("%s must be a finite number" % where)
-    if not 0.0 <= value <= 1.0:
+    try:
+        number = float(value)  # an integer beyond the float range raises OverflowError
+    except OverflowError:
+        number = math.inf
+    if not math.isfinite(number):
+        raise RequestError("%s must be a finite number" % where)
+    if not 0.0 <= number <= 1.0:
         raise RequestError("%s must lie in [0, 1], got %r" % (where, value))
-    return float(value)
+    return number
+
+
+def _no_unknown_fields(obj: dict[str, Any], known: set[str], where: str) -> None:
+    unknown = sorted(set(obj) - known)
+    if unknown:
+        raise RequestError("unknown %s field(s): %s" % (where, ", ".join(unknown)))
 
 
 def parse_request(obj: Any) -> Request:
     if not isinstance(obj, dict):
         raise RequestError("the request must be a JSON object")
-    known = {"format", "pluginPath", "pluginName", "state", "set", "preview", "catalog"}
-    unknown = sorted(set(obj) - known)
-    if unknown:
-        raise RequestError("unknown request field(s): %s" % ", ".join(unknown))
+    _no_unknown_fields(obj, {"format", "pluginPath", "pluginName", "state", "set", "preview", "catalog"}, "request")
     fmt = obj.get("format")
     if fmt not in ("vst3", "vst2"):
         raise RequestError('format must be "vst3" or "vst2"')
@@ -223,6 +232,8 @@ def parse_request(obj: Any) -> Request:
     name = obj.get("pluginName")
     if name is not None and not isinstance(name, str):
         raise RequestError("pluginName must be a string")
+    if name is not None and fmt == "vst2":
+        raise RequestError("pluginName selects a plugin inside a VST3 bundle; the vst2 host loads one plugin per DLL")
     request = Request(format=fmt, plugin_path=path, plugin_name=name)
 
     state_text = obj.get("state")
@@ -249,6 +260,7 @@ def parse_request(obj: Any) -> Request:
         for k, item in enumerate(previews):
             if not isinstance(item, dict) or not isinstance(item.get("name"), str):
                 raise RequestError("preview[%d] must be an object with a string name" % k)
+            _no_unknown_fields(item, {"name", "raw"}, "preview[%d]" % k)
             request.preview.append((item["name"], _number(item.get("raw"), "preview[%d].raw" % k)))
 
     catalog = obj.get("catalog", False)
@@ -291,13 +303,21 @@ def _finite(value: Any) -> bool:
     return not isinstance(value, float) or math.isfinite(value)
 
 
+def _reported(param: Any, what: str, value: Any) -> float:
+    """A number the plugin reports, which the JSON response can carry."""
+    number = float(value)
+    if not math.isfinite(number):
+        raise PluginError("the plugin reports a non-finite %s for parameter %r: %r" % (what, param.name, number))
+    return number
+
+
 def row(param: Any) -> dict[str, Any]:
     return {
         "name": param.name,
         "index": param.index,
-        "raw": float(param.raw),
+        "raw": _reported(param, "raw value", param.raw),
         "display": param.display,
-        "default": float(param.default),
+        "default": _reported(param, "default", param.default),
     }
 
 
@@ -318,23 +338,70 @@ def differs(param: Any) -> bool:
 
 # --- Stale controller
 
+def _nudged(value: float) -> float:
+    """``value`` moved by 0.01 toward the middle, so it stays in [0, 1]."""
+    return value - STALE_NUDGE if value > 0.5 else value + STALE_NUDGE
+
+
+def _far(value: float) -> float:
+    """The end of [0, 1] farther from ``value``."""
+    return 0.0 if value > 0.5 else 1.0
+
+
 def controller_is_stale(plugin: Any, params: list[Any]) -> bool:
     """Whether a VST3 controller ignored the state just loaded.
 
-    Every parameter is pushed by ±0.01 and back to the value the controller
-    reports, with one flush after each pass, and the saved state is compared
-    with the loaded one. A controller that follows its state rewrites the same
-    values; a stale one writes its own values over the processor's.
+    Three blocks run. The first comes before the baseline is taken, so a plugin
+    that rewrites its state on its first block is not taken for stale. Then
+    every parameter is pushed by ±0.01, a block runs, every parameter goes back
+    to the value the controller reports, and a block runs. A controller that
+    follows its state rewrites the loaded values; a stale one writes its own
+    values over the processor's. The nudge matters: a set to the value a
+    parameter already holds sends no change.
     """
+    plugin.flush()
     loaded = plugin.save_state()
     values = [float(p.raw) for p in params]
     for p, v in zip(params, values):
-        p.raw = v - STALE_NUDGE if v > 0.5 else v + STALE_NUDGE
+        p.raw = _nudged(v)
     plugin.flush()
     for p, v in zip(params, values):
         p.raw = v
     plugin.flush()
     return plugin.save_state() != loaded
+
+
+def set_stale(plugin: Any, named: dict[str, Any], sets: dict[str, float]) -> None:
+    """Apply ``sets`` to a plugin whose controller ignored its loaded state.
+
+    The controller still holds its own values, so a target equal to one of them
+    would send no change. Each parameter therefore moves to its target ±0.01
+    (toward the middle), a block runs, it moves to the target, and a block
+    runs. The controller cannot report the loaded values, so the saved state
+    is the evidence that the target took: it must differ from the nudged
+    state. When it does not (a stepped parameter can store the nudged and the
+    target value as one step), the parameter goes to the far end of [0, 1] and
+    back, and the state must change across that pass.
+    """
+    for name, raw in sets.items():
+        param = named[name]
+        param.raw = _nudged(raw)
+        plugin.flush()
+        nudged = plugin.save_state()
+        param.raw = raw
+        plugin.flush()
+        if plugin.save_state() != nudged:
+            continue
+        param.raw = _far(raw)
+        plugin.flush()
+        far = plugin.save_state()
+        param.raw = raw
+        plugin.flush()
+        if plugin.save_state() == far:
+            raise PluginError(
+                "the plugin's state did not take %r = %r: its controller ignores the loaded state, "
+                "and the saved state stayed the same across the set" % (name, raw)
+            )
 
 
 # --- Requests to responses
@@ -376,9 +443,12 @@ def respond(request: Request, plugin: Any, preview_params: list[Any] | None = No
         plugin.load_state(inner_state(request.format, request.state))
 
     if request.set:
-        for name, raw in request.set.items():
-            named[name].raw = raw
-        plugin.flush()
+        if stale:
+            set_stale(plugin, named, request.set)
+        else:
+            for name, raw in request.set.items():
+                named[name].raw = raw
+            plugin.flush()
         response["state"] = _b64(outer_state(request.format, request.state, plugin.save_state()))
     elif request.state is not None:
         response["state"] = request.state_text

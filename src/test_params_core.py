@@ -23,6 +23,9 @@ class FakeParam:
 
     @raw.setter
     def raw(self, value):
+        # A set to the value the controller already holds sends no change, as in a real host.
+        if value == self.plugin.controller[self.index]:
+            return
         self.plugin.controller[self.index] = value
         self.plugin.pending.add(self.index)
 
@@ -41,11 +44,14 @@ class FakePlugin:
     """A controller (what parameters report) and a processor (what the state saves).
 
     ``flush`` hands the changed controller values to the processor. A stale
-    plugin's ``load_state`` sets the processor only, as Serum does.
+    plugin's ``load_state`` sets the processor only, as Serum does. A
+    ``warms_up`` plugin adds a marker to its saved state at its first block.
+    The processor ignores changes to the ``deaf`` indices.
     """
 
-    def __init__(self, stale=False):
-        self.stale = stale
+    def __init__(self, stale=False, warms_up=False, deaf=()):
+        self.stale, self.warms_up, self.deaf = stale, warms_up, set(deaf)
+        self.warm = False
         self.controller: dict[int, float] = {}
         self.processor: dict[int, float] = {}
         self.pending: set[int] = set()
@@ -69,11 +75,13 @@ class FakePlugin:
         self.pending.clear()
 
     def save_state(self):
-        return struct.pack("<%df" % len(self.processor), *(self.processor[i] for i in sorted(self.processor)))
+        values = struct.pack("<%df" % len(self.processor), *(self.processor[i] for i in sorted(self.processor)))
+        return values + (b"warm" if self.warm else b"")
 
     def flush(self):
         self.flushes += 1
-        for i in self.pending:
+        self.warm = self.warm or self.warms_up
+        for i in self.pending - self.deaf:
             self.processor[i] = self.controller[i]
         self.pending.clear()
 
@@ -227,6 +235,10 @@ class RequestTest(unittest.TestCase):
             {"format": "vst3", "pluginPath": "x", "set": {"Gain": True}},
             {"format": "vst3", "pluginPath": "x", "preview": [{"name": "Gain"}]},
             {"format": "vst3", "pluginPath": "x", "catalog": "yes"},
+            {"format": "vst3", "pluginPath": "x", "set": {"Gain": 10**400}},
+            {"format": "vst3", "pluginPath": "x", "set": {"Gain": float("nan")}},
+            {"format": "vst3", "pluginPath": "x", "preview": [{"name": "Gain", "raw": 0.5, "extra": 1}]},
+            {"format": "vst2", "pluginPath": "x", "pluginName": "Sub"},
         ]
         for obj in bad:
             with self.subTest(obj=obj), self.assertRaises(core.RequestError):
@@ -286,6 +298,12 @@ class RespondTest(unittest.TestCase):
         response = core.respond(request(preview=[{"name": "Mode", "raw": 0.9}, {"name": "Gain", "raw": 0.1}]), FakePlugin())
         self.assertEqual(response["previews"], [{"name": "Mode", "raw": 0.9, "display": "C"}, {"name": "Gain", "raw": 0.1, "display": "0.10"}])
 
+    def test_non_finite_plugin_numbers_are_plugin_errors(self):
+        plugin = FakePlugin()
+        plugin.params[0].default = float("nan")
+        with self.assertRaises(core.PluginError):
+            core.respond(request(catalog=True), plugin)
+
     def test_unknown_names(self):
         with self.assertRaises(core.PluginError):
             core.respond(request(set={"Nope": 0.5}), FakePlugin())
@@ -299,7 +317,12 @@ class StaleControllerTest(unittest.TestCase):
         plugin.load_state(floats(0.8, 0.3, 0.2))
         self.assertFalse(core.controller_is_stale(plugin, plugin.params))
         self.assertEqual(plugin.save_state(), floats(0.8, 0.3, 0.2))
-        self.assertEqual(plugin.flushes, 2)
+        self.assertEqual(plugin.flushes, 3)
+
+    def test_a_state_change_at_the_first_block_is_not_stale(self):
+        plugin = FakePlugin(warms_up=True)
+        plugin.load_state(floats(0.8, 0.3, 0.2))
+        self.assertFalse(core.controller_is_stale(plugin, plugin.params))
 
     def test_stale_controller_is_detected(self):
         plugin = FakePlugin(stale=True)
@@ -320,6 +343,32 @@ class StaleControllerTest(unittest.TestCase):
         self.assertTrue(response["stale"])
         self.assertEqual(response["parameters"], [])
         self.assertEqual(core.vst3_component(base64.b64decode(response["state"])), floats(0.1, 0.3, 0.2))
+
+    def test_stale_set_to_the_controllers_value_takes(self):
+        # Gain's controller still holds its default 0.5 while the state holds 0.8:
+        # a plain set to 0.5 sends no change.
+        state = vst3_state(floats(0.8, 0.3, 0.2))
+        response = core.respond(request(state=b64(state), set={"Gain": 0.5, "Mix": 1.0}), FakePlugin(stale=True))
+        self.assertEqual(core.vst3_component(base64.b64decode(response["state"])), floats(0.5, 0.3, 1.0))
+
+    def test_stale_set_on_a_stepped_value_takes(self):
+        # Mode is stored as its step: the nudge and the target save the same bytes.
+        plugin = FakePlugin(stale=True)
+        stepped = plugin.flush
+
+        def flush():
+            stepped()
+            plugin.processor[1] = min(int(plugin.processor[1] * 3), 2) / 2
+
+        plugin.flush = flush
+        state = vst3_state(floats(0.8, 1.0, 0.2))
+        response = core.respond(request(state=b64(state), set={"Mode": 0.5}), plugin)
+        self.assertEqual(core.vst3_component(base64.b64decode(response["state"])), floats(0.8, 0.5, 0.2))
+
+    def test_stale_set_the_state_ignores_fails(self):
+        state = vst3_state(floats(0.8, 0.3, 0.2))
+        with self.assertRaises(core.PluginError):
+            core.respond(request(state=b64(state), set={"Gain": 0.1}), FakePlugin(stale=True, deaf=[0]))
 
     def test_vst2_and_stateless_requests_skip_the_check(self):
         plugin = FakePlugin(stale=True)

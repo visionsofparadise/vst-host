@@ -35,7 +35,7 @@ The request:
 |---|---|
 | `format` | `"vst3"` or `"vst2"` (VST2 on Windows only). |
 | `pluginPath` | The `.vst3` bundle or the VST2 `.dll`. |
-| `pluginName` | Optional sub-plugin name for VST3 shell plugins. |
+| `pluginName` | Optional sub-plugin name for VST3 shell plugins; a `vst2` request carrying it exits 2. |
 | `state` | Optional base64 state, FL Studio's Fruity Wrapper plugin state: for VST3 a u32 version then chunks of u32 id, u64 length and data, where chunk 3 is the plugin's component state; for VST2 a 21-byte header holding the chunk length as a u32 at byte 9, then the plugin's chunk. Without it the plugin starts from its defaults. |
 | `set` | Optional object of parameter name to raw value in [0, 1], applied to the state. |
 | `preview` | Optional array of `{ name, raw }` whose displays are returned. |
@@ -49,9 +49,9 @@ The response:
 | `state` | The state in the request's framing, with `set` applied. A VST3 `set` replaces chunk 3 only. Without `set` it is the request's state. |
 | `parameters` | Rows of `name`, `index`, `raw`, `display` and `default`. Catalog rows add whichever of `label`, `units`, `min`, `max`, `minText`, `maxText`, `step`, `choices` (`{ label, raw }`), `discrete`, `boolean` and `automatable` the plugin supplies. |
 | `previews` | `{ name, raw, display }` per preview. |
-| `stale` | `true` when a VST3 plugin's controller ignores the loaded state, so its reported values are its defaults rather than the state's. `parameters` is then empty, and `set` still applies to the state. |
+| `stale` | `true` when a VST3 plugin's controller ignores the loaded state, so its reported values are its defaults rather than the state's. `parameters` is then empty, and `set` still applies to the state: each value goes to its target ± 0.01 and then to the target, and a value the saved state does not take exits 1. |
 
-Parameter names are the plugin's own. A VST2 plugin's defaults come from a fresh instance, and its catalog metadata comes from its displays at 101 raw values: two displays mark it `boolean`, 3 to 32 give `choices`, and more give `minText` and `maxText`.
+Parameter names are the plugin's own. A VST2 plugin's defaults come from a fresh instance, and its catalog metadata comes from its displays at 101 raw values: two displays mark it `boolean`, 3 to 32 give `choices`, and more give `minText` and `maxText`, the displays at raw 0 and 1. VST3 catalog metadata follows the same rule over pedalboard's display sweep, with numeric displays giving `min`, `max` and `step`. A VST2 `set` opens the plugin's editor in a hidden window, so a VST2 plugin without an editor cannot be written.
 
 ## Releases
 

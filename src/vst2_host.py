@@ -17,17 +17,17 @@ import ctypes.wintypes as W
 import time
 from typing import Any
 
-from params_core import probe
+from params_core import PluginError, probe
 
 intptr = C.c_ssize_t
 
 effOpen, effClose, effGetParamLabel, effGetParamDisplay, effGetParamName = 0, 1, 6, 7, 8
 effSetSampleRate, effSetBlockSize, effMainsChanged = 10, 11, 12
 effEditOpen, effEditClose, effEditIdle = 14, 15, 19
-effGetChunk, effSetChunk = 23, 24
+effGetChunk, effSetChunk, effCanBeAutomated = 23, 24, 26
 effGetEffectName, effGetVendorString, effGetProductString, effGetVendorVersion = 45, 47, 48, 49
 
-effFlagsProgramChunks = 1 << 5
+effFlagsHasEditor, effFlagsProgramChunks = 1 << 0, 1 << 5
 kEffectMagic = 0x56737450
 
 AUDIOMASTER = C.CFUNCTYPE(intptr, C.c_void_p, C.c_int32, C.c_int32, intptr, C.c_void_p, C.c_float)
@@ -62,7 +62,7 @@ class VstTimeInfo(C.Structure):
                                          "smpteFrameRate", "samplesToNextClock", "flags")]
 
 
-_user32 = C.windll.user32
+_user32 = C.WinDLL("user32", use_last_error=True)
 _user32.CreateWindowExW.restype = C.c_void_p
 _user32.CreateWindowExW.argtypes = [C.c_uint32, C.c_wchar_p, C.c_wchar_p, C.c_uint32, C.c_int, C.c_int, C.c_int,
                                     C.c_int, C.c_void_p, C.c_void_p, C.c_void_p, C.c_void_p]
@@ -164,17 +164,29 @@ class Host:
     def sync_through_editor(self, idles: int = 5, seconds: float = 0.05) -> None:
         """Open the editor in a window that is never shown, idle it, and close it.
 
-        Sausage Fattener's chunk follows setParameter only once its editor has
-        run (format-findings 1.7).
+        Sausage Fattener's effGetChunk keeps returning the chunk from before a
+        setParameter until its editor has opened and idled; rendering,
+        effBeginSetProgram/effEndSetProgram and effSetProgram leave it stale.
+        A write therefore fails when the editor cannot open, rather than
+        returning the old chunk.
         """
+        if not self.e.flags & effFlagsHasEditor:
+            raise PluginError("cannot write the state: the plugin has no editor (effFlagsHasEditor unset), "
+                              "which the host opens so the plugin's chunk takes a set")
         hwnd = _user32.CreateWindowExW(0, "STATIC", "vst-host", WS_OVERLAPPEDWINDOW, 0, 0, 600, 400,
                                        None, None, None, None)
+        if not hwnd:
+            raise PluginError("cannot write the state: CreateWindowExW failed for the editor's hidden window "
+                              "(Windows error %d)" % C.get_last_error())
         try:
-            self.d(effEditOpen, ptr=C.c_void_p(hwnd))
-            for _ in range(idles):
-                self.d(effEditIdle)
-                pump(seconds)
-            self.d(effEditClose)
+            if not self.d(effEditOpen, ptr=C.c_void_p(hwnd)):
+                raise PluginError("cannot write the state: the plugin's editor did not open (effEditOpen returned 0)")
+            try:
+                for _ in range(idles):
+                    self.d(effEditIdle)
+                    pump(seconds)
+            finally:
+                self.d(effEditClose)
         finally:
             _user32.DestroyWindow(C.c_void_p(hwnd))
             drain()
@@ -217,6 +229,7 @@ class Vst2Parameter:
     def meta(self) -> dict[str, Any] | None:
         label = self.host.string(effGetParamLabel, self.index).strip()
         out = probe(self.text_for)
+        out["automatable"] = bool(self.host.d(effCanBeAutomated, self.index))
         if label:
             out["label"] = label
             out["units"] = label
@@ -227,19 +240,24 @@ class Vst2Plugin:
     """The request's instance, with ``fresh`` beside it for defaults and displays."""
 
     def __init__(self, path: str):
-        self.fresh = Host(path)
-        self.host = Host(path)
-        e = self.host.e
-        if not e.flags & effFlagsProgramChunks:
-            raise RuntimeError("the plugin keeps no state chunk (effFlagsProgramChunks unset)")
-        name = self.host.string(effGetEffectName) or self.host.string(effGetProductString)
-        self.info = {
-            "name": name,
-            "vendor": self.host.string(effGetVendorString),
-            "version": str(self.host.d(effGetVendorVersion) or e.version),
-            "identifier": _fourcc(e.uniqueID),
-        }
-        self.defaults = [self.fresh.get(i) for i in range(self.fresh.e.numParams)]
+        self._hosts: list[Host] = []
+        try:
+            self.fresh = self._open(path)
+            self.host = self._open(path)
+            e = self.host.e
+            if not e.flags & effFlagsProgramChunks:
+                raise RuntimeError("the plugin keeps no state chunk (effFlagsProgramChunks unset)")
+            name = self.host.string(effGetEffectName) or self.host.string(effGetProductString)
+            self.info = {
+                "name": name,
+                "vendor": self.host.string(effGetVendorString),
+                "version": str(self.host.d(effGetVendorVersion) or e.version),
+                "identifier": _fourcc(e.uniqueID),
+            }
+            self.defaults = [self.fresh.get(i) for i in range(self.fresh.e.numParams)]
+        except BaseException:
+            self.close()
+            raise
         self._params: list[Vst2Parameter] | None = None
         self._fresh_params: list[Vst2Parameter] | None = None
 
@@ -263,6 +281,12 @@ class Vst2Plugin:
     def flush(self) -> None:
         self.host.sync_through_editor()
 
+    def _open(self, path: str) -> Host:
+        host = Host(path)
+        self._hosts.append(host)
+        return host
+
     def close(self) -> None:
-        self.host.close()
-        self.fresh.close()
+        """effClose every opened instance, once."""
+        while self._hosts:
+            self._hosts.pop().close()

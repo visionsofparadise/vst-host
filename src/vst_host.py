@@ -21,8 +21,8 @@ Stdio contract (chain mode):
 - stdin: raw f32le interleaved audio bytes, read until EOF.
 - stderr: all logging, diagnostics, and error messages.
 
-See ``projects/code/buffered-audio-graph/buffered-audio-nodes/design-vst3.md``
-in the planner for the full architectural design.
+One process serves one buffer: the chain loads at startup, ``READY`` marks
+it loaded, and the process exits once the processed buffer is written.
 """
 
 from __future__ import annotations
@@ -115,20 +115,23 @@ class _Vst3Parameter:
             return out
         if wrapper.units:
             out["units"] = wrapper.units
-        if wrapper.type is float:
+        distinct = list(dict.fromkeys(wrapper.valid_values))
+        if len(distinct) == 2:
+            # The probe's rule: exactly 2 displays mark a boolean, whatever the wrapper's type.
+            out["boolean"] = True
+        elif wrapper.type is float:
             out["min"] = wrapper.min_value
             out["max"] = wrapper.max_value
             if wrapper.step_size:
                 out["step"] = wrapper.step_size
-        elif wrapper.type is bool:
-            out["boolean"] = True
-        elif wrapper.type is str and len(wrapper.valid_values) > params_core.PROBE_MAX_CHOICES:
-            # Text displays of a continuous value ("70% (-9.3 dB)"): the probe's limit applies.
-            out["minText"] = str(wrapper.valid_values[0])
-            out["maxText"] = str(wrapper.valid_values[-1])
-        elif wrapper.type is str:
+        elif wrapper.type is str and len(distinct) > params_core.PROBE_MAX_CHOICES:
+            # Text displays of a continuous value ("70% (-9.3 dB)"): the probe's limit applies,
+            # and minText and maxText are the displays at raw 0 and 1.
+            out["minText"] = self.text_for(0.0)
+            out["maxText"] = self.text_for(1.0)
+        elif wrapper.type is str and len(distinct) >= 3:
             choices = []
-            for value in wrapper.valid_values:
+            for value in distinct:
                 try:
                     choices.append({"label": str(value), "raw": float(wrapper.get_raw_value_for(value))})
                 except Exception:  # noqa: BLE001 - keep the choices the plugin parses.
@@ -189,7 +192,10 @@ def _serve_params(request: params_core.Request) -> dict[str, Any]:
     import vst2_host  # the ctypes host is Windows-only, so it is imported on demand
 
     plugin = vst2_host.Vst2Plugin(request.plugin_path)
-    return params_core.respond(request, plugin, preview_params=plugin.fresh_parameters())
+    try:
+        return params_core.respond(request, plugin, preview_params=plugin.fresh_parameters())
+    finally:
+        plugin.close()
 
 
 def _params_main() -> int:
@@ -205,11 +211,13 @@ def _params_main() -> int:
     try:
         try:
             request = params_core.parse_request(json.loads(sys.stdin.buffer.read() or b"null"))
-        except (ValueError, params_core.RequestError) as exc:  # JSONDecodeError is a ValueError
+        # JSONDecodeError and UnicodeDecodeError are ValueErrors; deep nesting raises RecursionError.
+        except (ValueError, RecursionError, params_core.RequestError) as exc:
             print(f"vst-host params: bad request: {exc}", file=sys.stderr)
             return 2
         try:
             response = _serve_params(request)
+            line = json.dumps(response, allow_nan=False).encode("utf-8") + b"\n"
         except params_core.RequestError as exc:
             print(f"vst-host params: bad request: {exc}", file=sys.stderr)
             return 2
@@ -219,7 +227,7 @@ def _params_main() -> int:
         sys.stdout.flush()
         with os.fdopen(response_fd, "wb") as out:
             response_fd = -1
-            out.write(json.dumps(response, allow_nan=False).encode("utf-8") + b"\n")
+            out.write(line)
         return 0
     finally:
         if response_fd >= 0:
