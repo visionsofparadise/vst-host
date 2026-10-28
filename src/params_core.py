@@ -12,13 +12,8 @@ platform with fake plugins. ``vst_host`` (VST3, through pedalboard) and
   ``display``, ``text_for(raw)`` and ``meta()``, which returns catalog
   metadata from the host or ``None`` when the probe supplies it.
 
-State framing follows FL Studio's Fruity Wrapper sub-event 53:
-
-- VST3: u32 version 1, then chunks of u32 id, u64 length and data. Chunk 1 is
-  FL's own data, chunk 3 is the plugin's IComponent state byte for byte, and
-  chunk 4 is FL's ParamID map. Only chunk 3 is ever replaced.
-- VST2: a 21-byte header (i32 -9, u8 13, i32 -2, u32 chunk length, 8 zero
-  bytes), then the plugin's ``effGetChunk`` bytes.
+A state is the plugin's own: a VST3 plugin's IComponent state, or a VST2
+plugin's ``effGetChunk`` bytes.
 """
 
 from __future__ import annotations
@@ -35,11 +30,6 @@ DEFAULT_EPSILON = 1e-6
 STALE_NUDGE = 0.01
 PROBE_STEPS = 100
 PROBE_MAX_CHOICES = 32
-
-VST3_COMPONENT_CHUNK = 3
-VST3_FL_DATA_CHUNK = 1
-VST2_HEADER_LENGTH = 21
-VST2_LENGTH_OFFSET = 9
 
 
 class RequestError(ValueError):
@@ -80,54 +70,7 @@ def juce_b64_decode(text: str) -> bytes:
     return bytes(out[:size]) + bytes(max(0, size - len(out)))
 
 
-# --- VST3 framing
-
-def vst3_chunks(state: bytes) -> tuple[int, list[tuple[int, bytes]]]:
-    """Split FL's VST3 sub-event 53 into its version and (id, data) chunks."""
-    if len(state) < 4:
-        raise RequestError("vst3 state is shorter than its 4-byte version")
-    version = struct.unpack_from("<I", state, 0)[0]
-    chunks: list[tuple[int, bytes]] = []
-    q = 4
-    while q < len(state):
-        if q + 12 > len(state):
-            raise RequestError("vst3 state has a truncated chunk header at byte %d" % q)
-        cid, n = struct.unpack_from("<IQ", state, q)
-        if q + 12 + n > len(state):
-            raise RequestError("vst3 state chunk %d at byte %d overruns the state" % (cid, q))
-        chunks.append((cid, state[q + 12 : q + 12 + n]))
-        q += 12 + n
-    if not any(cid == VST3_COMPONENT_CHUNK for cid, _ in chunks):
-        raise RequestError("vst3 state has no chunk 3 (IComponent state)")
-    return version, chunks
-
-
-def vst3_frame(version: int, chunks: list[tuple[int, bytes]]) -> bytes:
-    return struct.pack("<I", version) + b"".join(
-        struct.pack("<IQ", cid, len(data)) + data for cid, data in chunks
-    )
-
-
-def vst3_component(state: bytes) -> bytes:
-    return dict(vst3_chunks(state)[1])[VST3_COMPONENT_CHUNK]
-
-
-def vst3_replace_component(state: bytes, component: bytes) -> bytes:
-    version, chunks = vst3_chunks(state)
-    return vst3_frame(
-        version, [(cid, component if cid == VST3_COMPONENT_CHUNK else data) for cid, data in chunks]
-    )
-
-
-def vst3_new_state(component: bytes) -> bytes:
-    """A sub-event 53 for a fresh instance: FL's 64-byte data chunk and chunk 3.
-
-    The ParamID map (chunk 4) is left out, since pedalboard does not expose
-    ParamIDs.
-    """
-    fl_data = struct.pack("<I", 1) + bytes(60)
-    return vst3_frame(1, [(VST3_FL_DATA_CHUNK, fl_data), (VST3_COMPONENT_CHUNK, component)])
-
+# --- VST3 state through pedalboard
 
 _ICOMPONENT = re.compile(rb"<IComponent>([^<]*)</IComponent>")
 
@@ -150,39 +93,6 @@ def vst3_component_from_raw_state(raw_state: bytes) -> bytes:
     if match is None:
         raise PluginError("pedalboard's raw_state has no IComponent element")
     return juce_b64_decode(match.group(1).decode("ascii"))
-
-
-# --- VST2 framing
-
-def vst2_split(state: bytes) -> tuple[bytes, bytes]:
-    """Split FL's VST2 sub-event 53 into its 21-byte header and the plugin chunk."""
-    if len(state) < VST2_HEADER_LENGTH:
-        raise RequestError("vst2 state is shorter than FL's 21-byte header")
-    header, chunk = state[:VST2_HEADER_LENGTH], state[VST2_HEADER_LENGTH:]
-    declared = struct.unpack_from("<I", header, VST2_LENGTH_OFFSET)[0]
-    if declared != len(chunk):
-        raise RequestError(
-            "vst2 state header declares a %d-byte chunk, but %d bytes follow" % (declared, len(chunk))
-        )
-    return header, chunk
-
-
-def vst2_frame(header: bytes, chunk: bytes) -> bytes:
-    return header[:VST2_LENGTH_OFFSET] + struct.pack("<I", len(chunk)) + header[VST2_LENGTH_OFFSET + 4 :] + chunk
-
-
-def vst2_new_state(chunk: bytes) -> bytes:
-    return struct.pack("<ibiI", -9, 13, -2, len(chunk)) + bytes(8) + chunk
-
-
-def inner_state(fmt: str, state: bytes) -> bytes:
-    return vst3_component(state) if fmt == "vst3" else vst2_split(state)[1]
-
-
-def outer_state(fmt: str, base: bytes | None, inner: bytes) -> bytes:
-    if fmt == "vst3":
-        return vst3_new_state(inner) if base is None else vst3_replace_component(base, inner)
-    return vst2_new_state(inner) if base is None else vst2_frame(vst2_split(base)[0], inner)
 
 
 # --- Requests
@@ -245,7 +155,6 @@ def parse_request(obj: Any) -> Request:
         except binascii.Error as exc:
             raise RequestError("state is not valid base64: %s" % exc) from exc
         request.state_text = state_text
-        inner_state(fmt, request.state)  # validates the framing before the plugin loads
 
     sets = obj.get("set")
     if sets is not None:
@@ -421,7 +330,7 @@ def respond(request: Request, plugin: Any, preview_params: list[Any] | None = No
     (VST2, where a display needs a set); by default the plugin's own.
     """
     if request.state is not None:
-        plugin.load_state(inner_state(request.format, request.state))
+        plugin.load_state(request.state)
     params = plugin.parameters()
     named = _by_name(params)
     shown = _by_name(preview_params) if preview_params is not None else named
@@ -440,7 +349,7 @@ def respond(request: Request, plugin: Any, preview_params: list[Any] | None = No
         # The check wrote the controller's values over the processor's, so the
         # state is loaded again, and a set then changes only the parameters it
         # names: the processor takes a controller change at its next block.
-        plugin.load_state(inner_state(request.format, request.state))
+        plugin.load_state(request.state)
 
     if request.set:
         if stale:
@@ -449,11 +358,11 @@ def respond(request: Request, plugin: Any, preview_params: list[Any] | None = No
             for name, raw in request.set.items():
                 named[name].raw = raw
             plugin.flush()
-        response["state"] = _b64(outer_state(request.format, request.state, plugin.save_state()))
+        response["state"] = _b64(plugin.save_state())
     elif request.state is not None:
         response["state"] = request.state_text
     else:
-        response["state"] = _b64(outer_state(request.format, None, plugin.save_state()))
+        response["state"] = _b64(plugin.save_state())
 
     if stale:
         response["parameters"] = []
