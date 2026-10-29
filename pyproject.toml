@@ -1,6 +1,6 @@
 [project]
 name = "vst-host"
-version = "0.2.0"
+version = "0.3.0"
 description = "Pedalboard-based VST3 chain host CLI, with a params command that reads and writes VST3 and VST2 plugin parameters and state"
 readme = "README.md"
 license = { text = "GPL-3.0-or-later" }

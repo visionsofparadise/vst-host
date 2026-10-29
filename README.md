@@ -55,7 +55,7 @@ Parameter names are the plugin's own. A VST2 plugin's defaults come from a fresh
 
 ## Releases
 
-Binaries are built for Windows (`vst-host-win32-x64.exe`), Linux (`vst-host-linux-x64`) and macOS (`vst-host-darwin-arm64`).
+Each release holds a folder build per platform: `vst-host-win32-x64.zip`, `vst-host-linux-x64.tar.gz` and `vst-host-darwin-arm64.tar.gz`. Each archive unpacks to a `vst-host-<platform>-<arch>` folder holding the `vst-host` executable (`vst-host.exe` on Windows) beside its `_internal` libraries, which stay together.
 
 ## License
 

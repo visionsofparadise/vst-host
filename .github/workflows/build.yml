@@ -18,14 +18,17 @@ jobs:
             platform: win32
             arch: x64
             ext: ".exe"
+            archive: zip
           - os: ubuntu-22.04
             platform: linux
             arch: x64
             ext: ""
+            archive: tar.gz
           - os: macos-14
             platform: darwin
             arch: arm64
             ext: ""
+            archive: tar.gz
 
     runs-on: ${{ matrix.os }}
 
@@ -54,29 +57,33 @@ jobs:
         run: |
           pyinstaller pyinstaller.spec --clean --noconfirm
 
-      - name: Stage artifact with platform-arch name
-        shell: bash
-        run: |
-          mkdir -p artifacts
-          SRC="dist/vst-host${{ matrix.ext }}"
-          DST="artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}"
-          if [ ! -f "$SRC" ]; then
-            echo "Expected PyInstaller output at $SRC, got:" >&2
-            ls -la dist/ >&2
-            exit 1
-          fi
-          cp "$SRC" "$DST"
-          ls -la "$DST"
-
       - name: Smoke test --help
         shell: bash
         run: |
-          ./artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }} --help
+          ./dist/vst-host/vst-host${{ matrix.ext }} --help
+
+      - name: Archive the folder with platform-arch name
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          NAME="vst-host-${{ matrix.platform }}-${{ matrix.arch }}"
+          if [ ! -f "dist/vst-host/vst-host${{ matrix.ext }}" ]; then
+            echo "Expected PyInstaller output in dist/vst-host, got:" >&2
+            ls -la dist/ >&2
+            exit 1
+          fi
+          mv dist/vst-host "dist/$NAME"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd dist && 7z a -tzip "../artifacts/$NAME.zip" "$NAME" > /dev/null)
+          else
+            tar -C dist -czf "artifacts/$NAME.tar.gz" "$NAME"
+          fi
+          ls -la artifacts/
 
       - uses: actions/upload-artifact@v4
         with:
           name: vst-host-${{ matrix.platform }}-${{ matrix.arch }}
-          path: artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}${{ matrix.ext }}
+          path: artifacts/vst-host-${{ matrix.platform }}-${{ matrix.arch }}.${{ matrix.archive }}
           if-no-files-found: error
           retention-days: 1
 

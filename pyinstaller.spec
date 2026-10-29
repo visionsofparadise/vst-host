@@ -1,13 +1,15 @@
 # PyInstaller spec for the vst-host CLI.
 #
-# Bundles src/vst_host.py + Python + pedalboard + numpy into a single
-# self-contained --onefile executable. Pedalboard ships a JUCE-statically-
+# Bundles src/vst_host.py + Python + pedalboard + numpy into a self-contained
+# folder (onedir): the ``vst-host`` executable beside its ``_internal``
+# libraries. A onefile build unpacks itself on every start, which added
+# 7-9 s per run. Pedalboard ships a JUCE-statically-
 # linked native extension; PyInstaller's analyser sometimes misses parts of
 # it, so we explicitly --collect-all the package to pull in every submodule,
 # data file, and dynamic library.
 #
-# Output filename is ``vst-host`` (or ``vst-host.exe`` on Windows). CI renames
-# the artifact to the per-platform-arch convention afterwards.
+# Output is ``dist/vst-host/`` holding ``vst-host`` (or ``vst-host.exe`` on
+# Windows). CI archives the folder under the per-platform-arch name.
 
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
@@ -45,20 +47,28 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="vst-host",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     upx_exclude=[],
-    runtime_tmpdir=None,
     console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=False,
+    upx_exclude=[],
+    name="vst-host",
 )
