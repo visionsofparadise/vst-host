@@ -96,11 +96,11 @@ _FLUSH_RATE = 44100.0
 class _Vst3Parameter:
     """A ``params_core`` parameter over pedalboard's native parameter object."""
 
-    def __init__(self, owner: "_Vst3Plugin", native: Any):
+    def __init__(self, owner: "_Vst3Plugin", native: Any, default: float):
         self.owner, self.native = owner, native
         self.index = native.index
         self.name = native.name
-        self.default = native.default_raw_value
+        self.default = default
 
     @property
     def raw(self) -> float:
@@ -167,6 +167,11 @@ class _Vst3Plugin:
     assignment and ``plugin.parameters`` each build pedalboard's Python
     parameter wrappers, sweeping 1001 displays per parameter (17-49 s for
     Serum).
+
+    A parameter's default is its value in the freshly loaded plugin, as a
+    VST2's is, since a plugin can declare a default its fresh instance does
+    not hold (Serum 2's envelope curves declare 0.4 and 0.6 and hold 0.5 and
+    0.666).
     """
 
     def __init__(self, path: str, plugin_name: str | None):
@@ -181,11 +186,14 @@ class _Vst3Plugin:
             "version": self.plugin.version,
             "identifier": self.plugin.identifier,
         }
+        self._fresh = [float(native.raw_value) for native in self.plugin._parameters]
         self._params: list[_Vst3Parameter] | None = None
 
     def parameters(self) -> list[_Vst3Parameter]:
         if self._params is None:
-            self._params = [_Vst3Parameter(self, native) for native in self.plugin._parameters]
+            self._params = [
+                _Vst3Parameter(self, native, fresh) for native, fresh in zip(self.plugin._parameters, self._fresh)
+            ]
         return self._params
 
     def load_state(self, inner: bytes) -> None:

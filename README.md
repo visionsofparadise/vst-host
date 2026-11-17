@@ -51,7 +51,7 @@ The response:
 | `previews` | `{ name, raw, display }` per preview. |
 | `stale` | `true` when a VST3 plugin's controller ignores the loaded state, so its reported values are its defaults rather than the state's. `parameters` is then empty, and `set` still applies to the state: each value goes to its target ± 0.01 and then to the target, and a value the saved state does not take exits 1. |
 
-Parameter names are the plugin's own. A VST2 plugin's defaults come from a fresh instance, and its catalog metadata comes from its displays at 101 raw values: two displays mark it `boolean`, 3 to 32 give `choices`, and more give `minText` and `maxText`, the displays at raw 0 and 1. VST3 catalog metadata follows the same rule over pedalboard's display sweep, with numeric displays giving `min`, `max` and `step`. A VST2 `set` opens the plugin's editor in a hidden window, so a VST2 plugin without an editor cannot be written.
+Parameter names are the plugin's own. A parameter's `default` is its value in a fresh instance of the plugin, which can differ from the default the plugin declares. A VST2 plugin's catalog metadata comes from its displays at 101 raw values: two displays mark it `boolean`, 3 to 32 give `choices`, and more give `minText` and `maxText`, the displays at raw 0 and 1. VST3 catalog metadata follows the same rule over pedalboard's display sweep, with numeric displays giving `min`, `max` and `step`. A VST2 `set` opens the plugin's editor in a hidden window, so a VST2 plugin without an editor cannot be written.
 
 ## Releases
 
