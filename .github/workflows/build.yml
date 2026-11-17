@@ -24,7 +24,7 @@ jobs:
             arch: x64
             ext: ""
             archive: tar.gz
-          - os: macos-14
+          - os: macos-15
             platform: darwin
             arch: arm64
             ext: ""
