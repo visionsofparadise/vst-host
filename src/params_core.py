@@ -257,27 +257,37 @@ def _far(value: float) -> float:
     return 0.0 if value > 0.5 else 1.0
 
 
-def controller_is_stale(plugin: Any, params: list[Any]) -> bool:
+def controller_is_stale(plugin: Any, params: list[Any], state: bytes) -> bool:
     """Whether a VST3 controller ignored the state just loaded.
 
-    Three blocks run. The first comes before the baseline is taken, so a plugin
-    that rewrites its state on its first block is not taken for stale. Then
-    every parameter is pushed by ±0.01, a block runs, every parameter goes back
-    to the value the controller reports, and a block runs. A controller that
-    follows its state rewrites the loaded values; a stale one writes its own
-    values over the processor's. The nudge matters: a set to the value a
-    parameter already holds sends no change.
+    Every parameter is pushed by ±0.01 and a block runs, so the processor
+    takes the pushed values, and then ``state`` is loaded again. A controller
+    that follows its state returns the pushed parameters to their loaded
+    values; a stale one keeps the pushed values. The check compares values
+    rather than saved states, since a following plugin can save the same
+    values as different bytes (Serum 2 writes out defaults it had left out of
+    the loaded state). A parameter the push leaves in place tells nothing, and
+    a parameter the state does not hold (Serum 2 saves only the values off
+    their defaults) keeps its pushed value, so one returned parameter shows a
+    following controller. Every parameter then goes back to its value before
+    the push, a block runs, and ``state`` is loaded once more, so the plugin
+    ends holding ``state`` with no pushed value left in its controller.
     """
-    plugin.flush()
-    loaded = plugin.save_state()
     values = [float(p.raw) for p in params]
     for p, v in zip(params, values):
         p.raw = _nudged(v)
     plugin.flush()
+    pushed = [(p, v, float(p.raw)) for p, v in zip(params, values) if abs(float(p.raw) - v) > DEFAULT_EPSILON]
+    plugin.load_state(state)
+    plugin.flush()
+    stale = bool(pushed) and not any(
+        abs(float(p.raw) - loaded) < abs(float(p.raw) - moved) for p, loaded, moved in pushed
+    )
     for p, v in zip(params, values):
         p.raw = v
     plugin.flush()
-    return plugin.save_state() != loaded
+    plugin.load_state(state)
+    return stale
 
 
 def set_stale(plugin: Any, named: dict[str, Any], sets: dict[str, float]) -> None:
@@ -344,12 +354,7 @@ def respond(request: Request, plugin: Any, preview_params: list[Any] | None = No
     ]
 
     response: dict[str, Any] = {"plugin": plugin.info}
-    stale = request.format == "vst3" and request.state is not None and controller_is_stale(plugin, params)
-    if stale:
-        # The check wrote the controller's values over the processor's, so the
-        # state is loaded again, and a set then changes only the parameters it
-        # names: the processor takes a controller change at its next block.
-        plugin.load_state(request.state)
+    stale = request.format == "vst3" and request.state is not None and controller_is_stale(plugin, params, request.state)
 
     if request.set:
         if stale:

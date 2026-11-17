@@ -46,12 +46,15 @@ class FakePlugin:
     ``flush`` hands the changed controller values to the processor. A stale
     plugin's ``load_state`` sets the processor only, as Serum does. A
     ``warms_up`` plugin adds a marker to its saved state at its first block.
-    The processor ignores changes to the ``deaf`` indices.
+    A ``spells_out`` plugin saves a marker per parameter set since its last
+    load, as Serum 2 writes out a value it had left at its default. The
+    processor ignores changes to the ``deaf`` indices.
     """
 
-    def __init__(self, stale=False, warms_up=False, deaf=()):
-        self.stale, self.warms_up, self.deaf = stale, warms_up, set(deaf)
+    def __init__(self, stale=False, warms_up=False, spells_out=False, deaf=()):
+        self.stale, self.warms_up, self.spells_out, self.deaf = stale, warms_up, spells_out, set(deaf)
         self.warm = False
+        self.spelled: set[int] = set()
         self.controller: dict[int, float] = {}
         self.processor: dict[int, float] = {}
         self.pending: set[int] = set()
@@ -73,16 +76,19 @@ class FakePlugin:
         if not self.stale:
             self.controller.update(values)
         self.pending.clear()
+        self.spelled.clear()
 
     def save_state(self):
         values = struct.pack("<%df" % len(self.processor), *(self.processor[i] for i in sorted(self.processor)))
-        return values + (b"warm" if self.warm else b"")
+        return values + (b"warm" if self.warm else b"") + b"set" * len(self.spelled)
 
     def flush(self):
         self.flushes += 1
         self.warm = self.warm or self.warms_up
         for i in self.pending - self.deaf:
             self.processor[i] = self.controller[i]
+            if self.spells_out:
+                self.spelled.add(i)
         self.pending.clear()
 
 
@@ -248,19 +254,41 @@ class StaleControllerTest(unittest.TestCase):
     def test_following_controller_is_not_stale(self):
         plugin = FakePlugin()
         plugin.load_state(floats(0.8, 0.3, 0.2))
-        self.assertFalse(core.controller_is_stale(plugin, plugin.params))
+        self.assertFalse(core.controller_is_stale(plugin, plugin.params, floats(0.8, 0.3, 0.2)))
         self.assertEqual(plugin.save_state(), floats(0.8, 0.3, 0.2))
         self.assertEqual(plugin.flushes, 3)
 
     def test_a_state_change_at_the_first_block_is_not_stale(self):
         plugin = FakePlugin(warms_up=True)
         plugin.load_state(floats(0.8, 0.3, 0.2))
-        self.assertFalse(core.controller_is_stale(plugin, plugin.params))
+        self.assertFalse(core.controller_is_stale(plugin, plugin.params, floats(0.8, 0.3, 0.2)))
+
+    def test_a_state_saved_as_other_bytes_is_not_stale(self):
+        plugin = FakePlugin(spells_out=True)
+        plugin.load_state(floats(0.5, 0.0, 1.0))
+        for param in plugin.params:
+            param.raw = core._nudged(param.raw)
+        plugin.flush()
+        for param, value in zip(plugin.params, (0.5, 0.0, 1.0)):
+            param.raw = value
+        plugin.flush()
+        self.assertNotEqual(plugin.save_state(), floats(0.5, 0.0, 1.0))
+        plugin.load_state(floats(0.5, 0.0, 1.0))
+        self.assertFalse(core.controller_is_stale(plugin, plugin.params, floats(0.5, 0.0, 1.0)))
+
+    def test_a_parameter_the_state_does_not_hold_leaves_the_controller_following(self):
+        plugin = FakePlugin()
+        plugin.load_state(floats(0.8, 0.3))
+        self.assertFalse(core.controller_is_stale(plugin, plugin.params, floats(0.8, 0.3)))
+        for param, value in zip(plugin.params, (0.8, 0.3, 1.0)):
+            self.assertAlmostEqual(param.raw, value, places=6)
+        self.assertEqual(plugin.save_state(), floats(0.8, 0.3))
 
     def test_stale_controller_is_detected(self):
         plugin = FakePlugin(stale=True)
         plugin.load_state(floats(0.8, 0.3, 0.2))
-        self.assertTrue(core.controller_is_stale(plugin, plugin.params))
+        self.assertTrue(core.controller_is_stale(plugin, plugin.params, floats(0.8, 0.3, 0.2)))
+        self.assertEqual(plugin.save_state(), floats(0.8, 0.3, 0.2))
 
     def test_stale_response_passes_state_through(self):
         state = floats(0.8, 0.3, 0.2)
